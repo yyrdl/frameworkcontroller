@@ -29,9 +29,6 @@ RUN apk update && apk add --no-cache bash && \
   mkdir -p ${PROJECT_DIR} ${INSTALL_DIR}
 COPY . ${PROJECT_DIR}
 
-RUN ls ./src/github.com/microsoft/frameworkcontroller/
-RUN pwd
-
 RUN ${PROJECT_DIR}/build/frameworkcontroller/go-build.sh && \
   mv ${PROJECT_DIR}/dist/frameworkcontroller/* ${INSTALL_DIR}
 

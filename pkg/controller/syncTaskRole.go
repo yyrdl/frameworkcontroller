@@ -149,6 +149,8 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 		_,_,err = c._syncWhenUnrecognizedPodPhase(f,taskRoleName,taskIndex,pod)
 		return false,err
 	}
+
+	/*********************** Then Pod Is nil *********************************/
 	
 	// three cases when pod is nil
 

@@ -3,32 +3,15 @@ package controller
 import (
 	"fmt"
 	"time"
-	"reflect"
 	"strings"
 	log "github.com/sirupsen/logrus"
 	errorWrap "github.com/pkg/errors"
-	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/types"
 	core "k8s.io/api/core/v1"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
-	"k8s.io/client-go/util/retry"
-	"k8s.io/client-go/rest"
 	apiErrors "k8s.io/apimachinery/pkg/api/errors"
 	errorAgg "k8s.io/apimachinery/pkg/util/errors"
-	kubeClient "k8s.io/client-go/kubernetes"
-	kubeInformer "k8s.io/client-go/informers"
-	coreLister "k8s.io/client-go/listers/core/v1"
-	frameworkClient "github.com/microsoft/frameworkcontroller/pkg/client/clientset/versioned"
-	frameworkInformer "github.com/microsoft/frameworkcontroller/pkg/client/informers/externalversions"
-	frameworkLister "github.com/microsoft/frameworkcontroller/pkg/client/listers/frameworkcontroller/v1"
 	ci "github.com/microsoft/frameworkcontroller/pkg/apis/frameworkcontroller/v1"
-	"github.com/microsoft/frameworkcontroller/pkg/util"
 	"github.com/microsoft/frameworkcontroller/pkg/common"
 )
-
 
 func (c *FrameworkController) syncTaskRoleStatuses(f *ci.Framework, cm *core.ConfigMap) (syncFrameworkCancelled bool, err error) {
 
@@ -102,12 +85,12 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 
 
 	if nil != pod && nil != pod.DeletionTimestamp{
-		_,_,err = ci._syncWhenTaskIsBeingDeleted(f,taskRoleName,taskIndex)
+		_,_,err = c._syncWhenTaskIsBeingDeleted(f,taskRoleName,taskIndex)
 		return false,err
 	}
 
 	if nil != pod && taskStatus.State == ci.TaskAttemptDeletionPending{
-		syncExit,cancelled,err = ci._syncWhenTaskAttemptDeletionPending(f,taskRoleName,taskIndex)
+		syncExit,cancelled,err = c._syncWhenTaskAttemptDeletionPending(f,taskRoleName,taskIndex)
 	}
 
 	if true == syncExit || nil != err {
@@ -115,7 +98,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 	}
 
 	if nil != pod && taskStatus.State == ci.TaskAttemptDeletionRequested{
-		_,_,err = ci._synWhenTaskAttemptDeletionRequested(f,taskRoleName,taskIndex)
+		_,_,err = c._synWhenTaskAttemptDeletionRequested(f,taskRoleName,taskIndex)
 		return false,err
 	}
  
@@ -126,7 +109,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 	// it will only be automatically deleted after the kubelet comes back and
 	// kills the Pod.
 	if nil != pod && pod.Status.Phase == core.PodUnknown {
-		_,_,err = ci._syncWhenUnknownPodPhase(f.taskRoleName,taskIndex,pod)
+		_,_,err = c._syncWhenUnknownPodPhase(f,taskRoleName,taskIndex,pod)
 		return false , err
 	} 
 
@@ -139,31 +122,31 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 
 	// state  => TaskAttemptPreparing
 	if nil != pod && pod.Status.Phase == core.PodPending {
-		_,_,err = ci._syncBeforeTaskAttemptPreparing(f,taskRoleName,taskIndex)
+		_,_,err = c._syncBeforeTaskAttemptPreparing(f,taskRoleName,taskIndex)
 		return false,err
 	}
 
 	// state => TaskAttempRunning
 	if nil != pod && pod.Status.Phase == core.PodRunning {
-		_,_,err = ci._syncBeforeTaskAttemptRunning(f,taskRoleName,taskIndex)
+		_,_,err = c._syncBeforeTaskAttemptRunning(f,taskRoleName,taskIndex)
 		return false,err
 	}
 
 	// succeeded  , state => TaskAttemptDeletionPending
 	if nil != pod && pod.Status.Phase == core.PodSucceeded {
-		_,_, err = ci._syncWhenTaskAttemptSucceeded(f,taskRoleName,taskIndex)
+		_,_, err = c._syncWhenTaskAttemptSucceeded(f,taskRoleName,taskIndex)
 		return false,err
 	}
 
 	//failed , state  => TaskAttemptDeletionPending
 	if nil != pod && pod.Status.Phase == core.PodFailed{
-		_,_,err = ci._syncWhenTaskAttemptFailed(f,taskRoleName,taskIndex)
+		_,_,err = c._syncWhenTaskAttemptFailed(f,taskRoleName,taskIndex,pod)
 		return false,err
 	}
 
 	// otherwise ,unrecognized pod phase
 	if nil != pod {
-		_,_,err = ci._syncWhenUnrecognizedPodPhase(f,taskRoleName,taskIndex,pod)
+		_,_,err = c._syncWhenUnrecognizedPodPhase(f,taskRoleName,taskIndex,pod)
 		return false,err
 	}
 	
@@ -172,7 +155,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 	// before TaskAttemptCreationPending 
 
 	if nil == pod && nil == taskStatus.PodUID() {
-		syncExit,cancelled,err = ci._syncBeforeTaskAttemptCreationPending(f,taskRoleName,taskIndex)
+		syncExit,cancelled,err = c._syncBeforeTaskAttemptCreationPending(f,taskRoleName,taskIndex)
 	}
 
 	if true == syncExit || nil != err {
@@ -181,7 +164,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 
 	//the request has already been made, but the pod isn't found at local ,just wait
 	if nil == pod && nil != taskStatus.PodUID() && taskStatus.State == ci.TaskAttemptCreationRequested{
-		syncExit,cancelled,err = ci._syncWaitPodAppearInTheLocal(f,taskRoleName,taskIndex)
+		syncExit,cancelled,err = c._syncWaitPodAppearInTheLocal(f,taskRoleName,taskIndex)
 	}
 
 	if true == syncExit || nil != err {
@@ -192,7 +175,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 
 	// the legal state are TaskAttemptDeletionRequested ，TaskAttemptDeleting，TaskAttemptCompleted，and TaskCompleted
 	if nil == pod && nil != taskStatus.PodUID() && false == isLegalPodNilTaskState(taskStatus.State){
-		syncExit,cancelled,err = ci._syncWhenUnexpectedPodDeletion(f,taskRoleName,taskIndex)
+		syncExit,cancelled,err = c._syncWhenUnexpectedPodDeletion(f,taskRoleName,taskIndex)
 	}
 	
 	if true == syncExit || nil != err {
@@ -204,7 +187,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 
 	if taskStatus.State == ci.TaskAttemptCreationPending {
 		// createTaskAttempt
-		syncExit,cancelled,err = ci._syncWhenTaskAttemptCreationPending(f,cm,taskRoleName,taskIndex)
+		syncExit,cancelled,err = c._syncWhenTaskAttemptCreationPending(f,cm,taskRoleName,taskIndex)
 	}
  
 	if true == syncExit || nil != err {
@@ -212,7 +195,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 	}
 
 	if taskStatus.State == ci.TaskAttemptCompleted {
-		syncExit,cancelled,err = ci._syncWhenTaskAttemptCompleted(f,taskRoleName,taskIndex)
+		syncExit,cancelled,err = c._syncWhenTaskAttemptCompleted(f,taskRoleName,taskIndex)
 	}
 	
 	if true == syncExit || nil != err{
@@ -220,7 +203,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 	}
 	
 	if taskStatus.State == ci.TaskCompleted {
-		syncExit,cancelled,err = ci._syncWhenTaskCompleted(f,taskRoleName,taskIndex)
+		syncExit,cancelled,err = c._syncWhenTaskCompleted(f,taskRoleName,taskIndex)
 	}
 	
 	if true == syncExit || nil != err{
@@ -292,7 +275,7 @@ func (c *FrameworkController) _syncWaitPodAppearInTheLocal(f *ci.Framework,taskR
 	// Ensure pod is deleted in remote to avoid managed pod leak after
 	// TaskCompleted.
 
-	err := c.deletePod(f, taskRoleName, taskIndex, *taskStatus.PodUID())
+	err = c.deletePod(f, taskRoleName, taskIndex, *taskStatus.PodUID())
 		
 	if err != nil {
 		return true,false, err
@@ -330,7 +313,8 @@ func (c *FrameworkController)_syncWhenTaskAttemptDeletionPending(f *ci.Framework
 	// The CompletionStatus has been persisted, so it is safe to delete the
 	// pod now.
 
-	err := c.deletePod(f, taskRoleName, taskIndex, *taskStatus.PodUID())
+	err = c.deletePod(f, taskRoleName, taskIndex, *taskStatus.PodUID())
+
 	if err != nil {
 		return true,false, err
 	}
@@ -358,7 +342,7 @@ func (c *FrameworkController) _synWhenTaskAttemptDeletionRequested(f *ci.Framewo
 
 
 func(c* FrameworkController)_syncWhenUnknownPodPhase(f *ci.Framework,taskRoleName string, 
-	taskIndex int32)(syncExit bool,cancelled bool,err error){
+	taskIndex int32,pod *core.Pod)(syncExit bool,cancelled bool,err error){
 
 	logPfx := fmt.Sprintf("[%v][%v][%v]: syncTaskState: ",f.Key(), taskRoleName, taskIndex)
 
@@ -403,16 +387,6 @@ func (c *FrameworkController)_syncWhenTaskAttemptSucceeded(f *ci.Framework,taskR
 
 }
 
-func (c *FrameworkController) _syncWhenUnknownPodPhase(f *ci.Framework,taskRoleName string, 
-	taskIndex int32,pod *core.Pod)(syncExit bool,cancelled bool,err error){
-	
-	logPfx := fmt.Sprintf("[%v][%v][%v]: syncTaskState: ",f.Key(), taskRoleName, taskIndex)
-
-	log.Infof(logPfx+"Waiting Pod to be deleted or deleting or transitioned from %v",pod.Status.Phase)
-	
-	return  true,false,nil
-
-}
 
 func (c *FrameworkController) _syncWhenUnrecognizedPodPhase(f *ci.Framework,taskRoleName string, 
 	taskIndex int32,pod *core.Pod)(syncExit bool,cancelled bool,err error){
@@ -600,7 +574,7 @@ func (c *FrameworkController) _syncWhenTaskCompleted(f *ci.Framework,taskRoleNam
 		failedTaskCount := f.GetTaskCount((*ci.TaskStatus).IsFailed)
 		
 		diag_template := "All Tasks are completed and no user specified conditions in FrameworkAttemptCompletionPolicy have ever been triggered: "+
-		"TotalTaskCount: %v, FailedTaskCount: %v: Triggered by Task [%v][%v]: Diagnostics: %v",
+		"TotalTaskCount: %v, FailedTaskCount: %v: Triggered by Task [%v][%v]: Diagnostics: %v"
 		
 		diag := fmt.Sprintf(diag_template, totalTaskCount, failedTaskCount,taskRoleName, taskIndex, 
 			taskStatus.AttemptStatus.CompletionStatus.Diagnostics)

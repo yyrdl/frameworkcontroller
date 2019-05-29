@@ -2,6 +2,7 @@ package controller
 
 
 import (
+	"time"
 	log "github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"

@@ -183,7 +183,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 	}
 
 	// At this point, taskStatus.State must be in:
-	// {TaskCompleted, TaskAttemptCreationPending,TaskCompleted}
+	// {TaskAttemptCreationPending, TaskAttemptDeletionRequested, TaskAttemptDeleting,TaskAttemptCompleted,TaskCompleted}
 
 	if taskStatus.State == ci.TaskAttemptCreationPending {
 		// createTaskAttempt
@@ -193,6 +193,19 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 	if true == syncExit || nil != err {
 		return cancelled,err
 	}
+	
+	
+	// pod is deleted by the frameworkController , and the local cache of this pod has already disappeared
+	// switch to next state
+
+	if taskStatus.State == ci.TaskAttemptDeletionRequested || taskStatus.State == ci.TaskAttemptDeleting{
+		syncExit,cancelled,err = c._syncWhenTaskAttemptDeletionDone(f,taskRoleName,taskIndex)
+	}
+
+	if true == syncExit || nil != err{
+		return cancelled,err
+	}
+	
 
 	if taskStatus.State == ci.TaskAttemptCompleted {
 		syncExit,cancelled,err = c._syncWhenTaskAttemptCompleted(f,taskRoleName,taskIndex)
@@ -238,6 +251,31 @@ func (c *FrameworkController)_syncWhenUnexpectedPodDeletion(f *ci.Framework,task
 	taskStatus.AttemptStatus.CompletionStatus)
 
 	return false,false,nil
+}
+
+func (c *FrameworkController) _syncWhenTaskAttemptDeletionDone(f *ci.Framework,taskRoleName string, 
+	taskIndex int32)(syncExit bool,cancelled bool,err error){
+	
+	logPfx := fmt.Sprintf("[%v][%v][%v]: syncTaskState: ",f.Key(), taskRoleName, taskIndex)
+
+	taskStatus := f.TaskStatus(taskRoleName, taskIndex)
+	
+			
+	if taskStatus.AttemptStatus.CompletionStatus == nil {
+		diag := fmt.Sprintf("Pod was deleted by others")
+		log.Warnf(logPfx + diag)
+		taskStatus.AttemptStatus.CompletionStatus =  ci.CompletionCodePodExternalDeleted.NewCompletionStatus(diag)
+	}
+	
+	taskStatus.AttemptStatus.CompletionTime = common.PtrNow()
+		
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCompleted,nil)
+	
+	log.Infof(logPfx+"TaskAttemptInstance %v is completed with CompletionStatus: %v",*taskStatus.TaskAttemptInstanceUID(),
+	taskStatus.AttemptStatus.CompletionStatus)
+	
+	return false,false,nil
+
 }
 
 
@@ -293,7 +331,6 @@ func (c *FrameworkController) _syncWhenTaskIsBeingDeleted(f *ci.Framework,taskRo
 	
 	logPfx := fmt.Sprintf("[%v][%v][%v]: syncTaskState: ",f.Key(), taskRoleName, taskIndex)
 
-	taskStatus := f.TaskStatus(taskRoleName, taskIndex)
 
 	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptDeleting,nil)
 
@@ -305,8 +342,6 @@ func (c *FrameworkController) _syncWhenTaskIsBeingDeleted(f *ci.Framework,taskRo
 
 func (c *FrameworkController)_syncWhenTaskAttemptDeletionPending(f *ci.Framework,taskRoleName string, 
 	taskIndex int32)(syncExit bool,cancelled bool,err error){
-
-	logPfx := fmt.Sprintf("[%v][%v][%v]: syncTaskState: ",f.Key(), taskRoleName, taskIndex)
 
 	taskStatus := f.TaskStatus(taskRoleName, taskIndex)
 

@@ -15,7 +15,6 @@ import (
 
 
 // It should not be invoked concurrently with the same key.
-//
 // Return error only for Platform Transient Error, so that the key
 // can be enqueued again after rate limited delay.
 // For Platform Permanent Error, it should be delivered by panic.
@@ -135,7 +134,6 @@ func (c *FrameworkController) syncFramework(key string) (returnedErr error) {
 
 
 
-
 func (c *FrameworkController) syncFrameworkStatus(f *ci.Framework) error {
 
 	logPfx := fmt.Sprintf("[%v]: syncFrameworkStatus: ", f.Key())
@@ -152,6 +150,8 @@ func (c *FrameworkController) syncFrameworkStatus(f *ci.Framework) error {
 
 	return c.syncFrameworkState(f)
 }
+
+
 
 func (c *FrameworkController) syncFrameworkState(f *ci.Framework) error {
 

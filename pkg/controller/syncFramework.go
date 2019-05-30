@@ -6,6 +6,7 @@ import (
 	"time"
 	"reflect"
 	log "github.com/sirupsen/logrus"
+	core "k8s.io/api/core/v1"
 	apiErrors "k8s.io/apimachinery/pkg/api/errors"
 	errorAgg "k8s.io/apimachinery/pkg/util/errors"
 	ci "github.com/microsoft/frameworkcontroller/pkg/apis/frameworkcontroller/v1"
@@ -151,9 +152,8 @@ func (c *FrameworkController) syncFrameworkStatus(f *ci.Framework) error {
 	return c.syncFrameworkState(f)
 }
 
-
-
-func (c *FrameworkController) syncFrameworkState(f *ci.Framework) error {
+ 
+func (c *FrameworkController) syncFrameworkState(f *ci.Framework) error{
 
 	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
 
@@ -167,228 +167,342 @@ func (c *FrameworkController) syncFrameworkState(f *ci.Framework) error {
 	}
 
 	// Get the ground truth readonly cm
-
 	cm, err := c.getOrCleanupConfigMap(f)
 
 	if err != nil {
 		return err
 	}
- 
 
-	// Totally reconstruct FrameworkState in case Framework.Status is failed to
-	// persist due to FrameworkController restart.
+	var syncExit bool
+
+	// The configMap is being deleted
+	//　configMap 正在被删除
+	if nil != cm && nil != cm.DeletionTimestamp {
+		syncExit,err = c._syncWhenConfigMapIsBeingDeleted(f)
+		return err
+	}
+
+	if nil != cm  &&  f.Status.State == ci.FrameworkAttemptDeletionPending {
+		syncExit,err = c._syncWhenFrameworkAttemptDeletionPending(f)
+		if syncExit == true || nil != err{
+			return err
+		}
+	}
+
+    // Avoid sync with outdated object:
+	// cm is remote deletion requested but not deleting or deleted in the local  cache.
+	//　已经发出了删除ｃｍ的请求，等待本地的cm　消失
+
+	if nil != cm  && f.Status.State == ci.FrameworkAttemptDeletionRequested{
+		syncExit,err = c._syncWhenFrameworkAttemptDeletionRequested(f)
+		return err
+	}
+
+	
+	if nil != cm && f.Status.State != ci.FrameworkAttemptPreparing && f.Status.State != ci.FrameworkAttemptRunning{
+		syncExit,err = c._syncWhenFrameworkAttemptCreationRequested(f)
+	}
+
+	if syncExit == true || nil != err{
+		return err
+	}
+
+	//the framework has not been created , switch the state to FrameworkAttemptCreationPending
+	//表明　controller 还未创建这个 framework ,　向下一个状态转变
+
+	if nil == cm && nil == f.ConfigMapUID() {
+		syncExit,err = c._syncBeforeFrameworkAttemptCreationPending(f)
+	}
+
+	if syncExit == true || nil != err{
+		return err
+	}
+
+	// Avoid sync with outdated object:
+	// cm is remote creation requested but not found in the local cache.
+	// 在controller 已经发起创建 cm的请求，但是 cm　还未更新到本地缓存
+	if nil == cm && f.Status.State == ci.FrameworkAttemptCreationRequested{
+		syncExit,err = c._syncWaitConfigMapAppearInTheLocal(f)
+	}
+
+	if syncExit == true || nil != err{
+		return err
+	}
+
+	// unexpected configMap deletion
+	//　ConfigMap　被非预期的删除
+	if nil == cm && false == isLegalConfigMapNilFrameworkState(f.Status.State){
+		syncExit, err = c._syncWhenUnexpectedConfigMapDeletion(f)
+	}
+
+	if syncExit == true || nil != err{
+		return err
+	}
+
+	// 删除的过度状态，转到下一个状态
+	if nil == cm && ( f.Status.State == ci.FrameworkAttemptDeletionRequested  || f.Status.State == ci.FrameworkAttemptDeleting){
+		syncExit,err = c._syncWhenConfigMapDeletionDone(f)
+	}
+
+	if syncExit == true || nil != err{
+		return err
+	}
+
+	if f.Status.State == ci.FrameworkAttemptCompleted{
+		syncExit,err = c._syncWhenFrameworkAttemptCompleted(f)
+	}
+
+	if syncExit == true || nil != err{
+		return err
+	}
+
+	if f.Status.State == ci.FrameworkAttemptCreationPending{
+		syncExit,err = c._syncWhenFrameworkAttemptCreationPending(f)
+	}
+
+	if syncExit == true || nil != err{
+		return err
+	}
 
 
-	// cm is not found at local cache,and is not initialized 
+	if f.Status.State == ci.FrameworkAttemptPreparing || f.Status.State == ci.FrameworkAttemptRunning{
+		syncExit,err = c._syncFrameworkAttemptRunningState(f,cm)
+	}
 
-	if nil == cm && f.ConfigMapUID() == nil{
+	if syncExit == true || nil != err{
+		return err
+	}
+
+	// Unreachable
+	panic(fmt.Errorf(logPfx+"Failed: At this point, FrameworkState should be in {%v, %v} instead of %v",
+			ci.FrameworkAttemptPreparing, ci.FrameworkAttemptRunning, f.Status.State))
+
+}
+
+func (c *FrameworkController)_syncFrameworkAttemptRunningState(f *ci.Framework,cm *core.ConfigMap)(bool,error){
+	
+	cancelled, err := c.syncTaskRoleStatuses(f, cm)
+
+	if !cancelled {
+		if !f.IsAnyTaskRunning() {
+			f.TransitionFrameworkState(ci.FrameworkAttemptPreparing)
+		} else {
+			f.TransitionFrameworkState(ci.FrameworkAttemptRunning)
+		}
+	}
+
+	return true, err
+}
+
+
+func (c *FrameworkController)_syncWhenFrameworkAttemptCreationPending(f *ci.Framework)(bool,error){
+
+	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
+	// createFrameworkAttempt
+	cm, err := c.createConfigMap(f)
+
+	if err != nil {
+		return true,err
+	}
+
+	f.Status.AttemptStatus.ConfigMapUID = &cm.UID
+
+	f.Status.AttemptStatus.InstanceUID = ci.GetFrameworkAttemptInstanceUID(f.FrameworkAttemptID(), f.ConfigMapUID())
+
+	f.TransitionFrameworkState(ci.FrameworkAttemptCreationRequested)
+
+	// Informer may not deliver any event if a create is immediately followed by
+	// a delete, so manually enqueue a sync to check the cm existence after the
+	// timeout.
+	c.enqueueFrameworkAttemptCreationTimeoutCheck(f, false)
+
+	// The ground truth cm is the local cached one instead of the remote one,
+	// so need to wait before continue the sync.
+
+	log.Infof(logPfx +"Waiting ConfigMap to appear in the local cache or timeout")
+
+	return true,nil
+}
+
+func (c *FrameworkController) _syncWhenFrameworkAttemptCompleted(f *ci.Framework)(bool,error){
+
+	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
+	
+	retryDecision := f.Spec.RetryPolicy.ShouldRetry(
+		f.Status.RetryPolicyStatus,
+		f.Status.AttemptStatus.CompletionStatus.Type,
+		*c.cConfig.FrameworkMinRetryDelaySecForTransientConflictFailed,
+		*c.cConfig.FrameworkMaxRetryDelaySecForTransientConflictFailed)
+		
+	
+	if f.Status.RetryPolicyStatus.RetryDelaySec == nil {
+		// RetryFramework is not yet scheduled, so need to be decided.
+		
+		if retryDecision.ShouldRetry {
+			
+			// scheduleToRetryFramework
+			log.Infof(logPfx+"Will retry Framework with new FrameworkAttempt: RetryDecision: %v",retryDecision)
+			f.Status.RetryPolicyStatus.RetryDelaySec = &retryDecision.DelaySec
+
+		} else {
+			// completeFramework
+			
+			log.Infof(logPfx+"Will complete Framework: RetryDecision: %v",retryDecision)
+			
+			f.Status.CompletionTime = common.PtrNow()
+			f.TransitionFrameworkState(ci.FrameworkCompleted)
+			return  true,nil
+		}
+	}
+
+	if f.Status.RetryPolicyStatus.RetryDelaySec != nil {
+		// RetryFramework is already scheduled, so just need to check timeout.
+		if c.enqueueFrameworkRetryDelayTimeoutCheck(f, true) {
+			log.Infof(logPfx + "Waiting Framework to retry after delay")
+			return true,nil
+		}
+
+		// retryFramework
+		log.Infof(logPfx + "Retry Framework")
+		f.Status.RetryPolicyStatus.TotalRetriedCount++
+
+		if retryDecision.IsAccountable {
+			f.Status.RetryPolicyStatus.AccountableRetriedCount++
+		}
+
+		f.Status.RetryPolicyStatus.RetryDelaySec = nil
+
+		f.Status.AttemptStatus = f.NewFrameworkAttemptStatus(f.Status.RetryPolicyStatus.TotalRetriedCount)
+
 		f.TransitionFrameworkState(ci.FrameworkAttemptCreationPending)
 	}
 
-	// cm is initialized but missed at local cache
-	if nil == cm && f.ConfigMapUID() != nil{
-		// Avoid sync with outdated object:
-		// cm is remote creation requested but not found in the local cache.
-		if f.Status.State == ci.FrameworkAttemptCreationRequested {
-
-			if c.enqueueFrameworkAttemptCreationTimeoutCheck(f, true) {
-				log.Infof(logPfx +"Waiting ConfigMap to appear in the local cache or timeout")
-				return nil
-			}
-
-			diag := fmt.Sprintf("ConfigMap does not appear in the local cache within timeout %v, "+
-							"so consider it was deleted and force delete it",
-					common.SecToDuration(c.cConfig.ObjectLocalCacheCreationTimeoutSec))
+	return false,nil
+}
 
 
-			log.Warnf(logPfx + diag)
+func (c *FrameworkController) _syncWhenFrameworkAttemptCreationRequested(f *ci.Framework)(bool,error){
+	f.TransitionFrameworkState(ci.FrameworkAttemptPreparing)
+	return false,nil
+}
 
-			// Ensure cm is deleted in remote to avoid managed cm leak after
-			// FrameworkCompleted.
-			err := c.deleteConfigMap(f, *f.ConfigMapUID())
 
-			if err != nil {
-				return err
-			}
+func (c *FrameworkController) _syncWhenConfigMapDeletionDone(f *ci.Framework)(bool,error){
+	
+	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
 
-			f.Status.AttemptStatus.CompletionStatus =  ci.CompletionCodeConfigMapCreationTimeout.NewCompletionStatus(diag)
-
-		}
-
-		if f.Status.State != ci.FrameworkAttemptCompleted {
-
-			if f.Status.AttemptStatus.CompletionStatus == nil {
-					
-				diag := fmt.Sprintf("ConfigMap was deleted by others")
-					
-				log.Warnf(logPfx + diag)
-
-				f.Status.AttemptStatus.CompletionStatus = ci.CompletionCodeConfigMapExternalDeleted.NewCompletionStatus(diag)
-			}
-
-			f.Status.AttemptStatus.CompletionTime = common.PtrNow()
-
-			f.TransitionFrameworkState(ci.FrameworkAttemptCompleted)
-
-			log.Infof(logPfx + "FrameworkAttemptInstance %v is completed with CompletionStatus: %v",*f.FrameworkAttemptInstanceUID(),
-					f.Status.AttemptStatus.CompletionStatus)
-			
-		}
+	if f.Status.AttemptStatus.CompletionStatus == nil {
+		diag := fmt.Sprintf("ConfigMap was deleted by others")
+		log.Warnf(logPfx + diag)
+		f.Status.AttemptStatus.CompletionStatus =
+				ci.CompletionCodeConfigMapExternalDeleted.NewCompletionStatus(diag)
 	}
 
-	if nil != cm &&  nil == cm.DeletionTimestamp {
-		// cm is going to be deleted
-		if f.Status.State == ci.FrameworkAttemptDeletionPending {
-			// The CompletionStatus has been persisted, so it is safe to delete the
-			// cm now.
-			err := c.deleteConfigMap(f, *f.ConfigMapUID())
+	f.Status.AttemptStatus.CompletionTime = common.PtrNow()
+	f.TransitionFrameworkState(ci.FrameworkAttemptCompleted)
+	log.Infof(logPfx+
+			"FrameworkAttemptInstance %v is completed with CompletionStatus: %v",
+		*f.FrameworkAttemptInstanceUID(),
+		f.Status.AttemptStatus.CompletionStatus)
 
-			if err != nil {
-				return err
-			}
+	return false,nil
+}
 
-			f.TransitionFrameworkState(ci.FrameworkAttemptDeletionRequested)
-		}
+func (c *FrameworkController)_syncWhenFrameworkAttemptDeletionRequested(f *ci.Framework)(bool,error){
+	// The deletion requested object will never appear again with the same UID,
+	// so always just wait.
+	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
+	log.Infof(logPfx +"Waiting ConfigMap to disappearing or disappear in the local cache")
+		 
 
-		// Avoid sync with outdated object:
-		// cm is remote deletion requested but not deleting or deleted in the local
-		// cache.
+	return false,nil
+}
 
-		if f.Status.State == ci.FrameworkAttemptDeletionRequested {
-			// The deletion requested object will never appear again with the same UID,
-			// so always just wait.
-			log.Infof(logPfx + "Waiting ConfigMap to disappearing or disappear in the local cache")
-			return nil
-		}
+func (c *FrameworkController)_syncWhenFrameworkAttemptDeletionPending(f *ci.Framework)(bool,error){
+	// The CompletionStatus has been persisted, so it is safe to delete the
+	// cm now.
+	err := c.deleteConfigMap(f, *f.ConfigMapUID())
 
-		if f.Status.State != ci.FrameworkAttemptPreparing && f.Status.State != ci.FrameworkAttemptRunning {
-			f.TransitionFrameworkState(ci.FrameworkAttemptPreparing)
-		}
-
+	if err != nil {
+		return true, err
 	}
 
-	// cm is found , but is going to be deleted
-	if nil != cm && nil != cm.DeletionTimestamp{
-		f.TransitionFrameworkState(ci.FrameworkAttemptDeleting)
-		log.Infof(logPfx + "Waiting ConfigMap to be deleted")
-		return nil
+	f.TransitionFrameworkState(ci.FrameworkAttemptDeletionRequested)
+
+	return false,nil
+}
+
+func (c *FrameworkController) _syncWhenConfigMapIsBeingDeleted(f *ci.Framework)(bool,error){
+
+	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
+
+	f.TransitionFrameworkState(ci.FrameworkAttemptDeleting)
+
+	log.Infof(logPfx + "Waiting ConfigMap to be deleted")
+
+	return true, nil
+}
+
+func (c *FrameworkController) _syncWhenUnexpectedConfigMapDeletion(f *ci.Framework)(bool,error){
+
+	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
+
+	if f.Status.AttemptStatus.CompletionStatus == nil {
+
+		diag := fmt.Sprintf("ConfigMap was deleted by others")
+
+		log.Warnf(logPfx + diag)
+
+		f.Status.AttemptStatus.CompletionStatus =
+				ci.CompletionCodeConfigMapExternalDeleted.NewCompletionStatus(diag)
 	}
 
+	f.Status.AttemptStatus.CompletionTime = common.PtrNow()
 
-	// At this point, f.Status.State must be in:
-	// {FrameworkAttemptCreationPending, FrameworkAttemptCompleted,
-	// FrameworkAttemptPreparing, FrameworkAttemptRunning}
+	f.TransitionFrameworkState(ci.FrameworkAttemptCompleted)
 
-	if f.Status.State == ci.FrameworkAttemptCompleted {
+	log.Infof(logPfx+"FrameworkAttemptInstance %v is completed with CompletionStatus: %v",
+		*f.FrameworkAttemptInstanceUID(),
+		f.Status.AttemptStatus.CompletionStatus)
+	
+	return false,nil
 
-		// attemptToRetryFramework
-		
-		retryDecision := f.Spec.RetryPolicy.ShouldRetry(
-			f.Status.RetryPolicyStatus,
-			f.Status.AttemptStatus.CompletionStatus.Type,
-			*c.cConfig.FrameworkMinRetryDelaySecForTransientConflictFailed,
-			*c.cConfig.FrameworkMaxRetryDelaySecForTransientConflictFailed)
+}
 
-		if f.Status.RetryPolicyStatus.RetryDelaySec == nil {
 
-			// RetryFramework is not yet scheduled, so need to be decided.
+func (c *FrameworkController)_syncBeforeFrameworkAttemptCreationPending(f *ci.Framework)(bool,error){
+	f.TransitionFrameworkState(ci.FrameworkAttemptCreationPending)
+	return false,nil
+}
 
-			if retryDecision.ShouldRetry {
-				// scheduleToRetryFramework
 
-				log.Infof(logPfx+"Will retry Framework with new FrameworkAttempt: RetryDecision: %v",retryDecision)
+func (c *FrameworkController) _syncWaitConfigMapAppearInTheLocal(f *ci.Framework)(bool,error){
 
-				f.Status.RetryPolicyStatus.RetryDelaySec = &retryDecision.DelaySec
+	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
 
-			} else {
-				// completeFramework
-
-				log.Infof(logPfx+"Will complete Framework: RetryDecision: %v",retryDecision)
-
-				f.Status.CompletionTime = common.PtrNow()
-
-				f.TransitionFrameworkState(ci.FrameworkCompleted)
-
-				return nil
-			}
-		}
-
-		if f.Status.RetryPolicyStatus.RetryDelaySec != nil {
-			// RetryFramework is already scheduled, so just need to check timeout.
-
-			if c.enqueueFrameworkRetryDelayTimeoutCheck(f, true) {
-
-				log.Infof(logPfx + "Waiting Framework to retry after delay")
-				
-				return nil
-			
-			}
-
-			// retryFramework
-			log.Infof(logPfx + "Retry Framework")
-
-			f.Status.RetryPolicyStatus.TotalRetriedCount++
-
-			if retryDecision.IsAccountable {
-				f.Status.RetryPolicyStatus.AccountableRetriedCount++
-			}
-
-			f.Status.RetryPolicyStatus.RetryDelaySec = nil
-			f.Status.AttemptStatus = f.NewFrameworkAttemptStatus(f.Status.RetryPolicyStatus.TotalRetriedCount)
-			f.TransitionFrameworkState(ci.FrameworkAttemptCreationPending)
-		}
-	}
-	// At this point, f.Status.State must be in:
-	// {FrameworkAttemptCreationPending, FrameworkAttemptPreparing,
-	// FrameworkAttemptRunning}
-
-	if f.Status.State == ci.FrameworkAttemptCreationPending {
-		// createFrameworkAttempt
-		cm, err := c.createConfigMap(f)
-		if err != nil {
-			return err
-		}
-
-		f.Status.AttemptStatus.ConfigMapUID = &cm.UID
-		
-		f.Status.AttemptStatus.InstanceUID = ci.GetFrameworkAttemptInstanceUID(f.FrameworkAttemptID(), f.ConfigMapUID())
-		
-		f.TransitionFrameworkState(ci.FrameworkAttemptCreationRequested)
-
-		// Informer may not deliver any event if a create is immediately followed by
-		// a delete, so manually enqueue a sync to check the cm existence after the
-		// timeout.
-		c.enqueueFrameworkAttemptCreationTimeoutCheck(f, false)
-
-		// The ground truth cm is the local cached one instead of the remote one,
-		// so need to wait before continue the sync.
+	if c.enqueueFrameworkAttemptCreationTimeoutCheck(f, true) {
 		log.Infof(logPfx +
 				"Waiting ConfigMap to appear in the local cache or timeout")
-		return nil
+		return true,nil
 	}
 
-	// At this point, f.Status.State must be in:
-	// {FrameworkAttemptPreparing, FrameworkAttemptRunning}
+	diag := fmt.Sprintf(
+		"ConfigMap does not appear in the local cache within timeout %v, "+
+				"so consider it was deleted and force delete it",
+		common.SecToDuration(c.cConfig.ObjectLocalCacheCreationTimeoutSec))
 
-	if f.Status.State == ci.FrameworkAttemptPreparing || f.Status.State == ci.FrameworkAttemptRunning {
 
-		cancelled, err := c.syncTaskRoleStatuses(f, cm)
+	log.Warnf(logPfx + diag)
 
-		if !cancelled {
-			if !f.IsAnyTaskRunning() {
-				f.TransitionFrameworkState(ci.FrameworkAttemptPreparing)
-			} else {
-				f.TransitionFrameworkState(ci.FrameworkAttemptRunning)
-			}
-		}
+	// Ensure cm is deleted in remote to avoid managed cm leak after
+	// FrameworkCompleted.
+	err := c.deleteConfigMap(f, *f.ConfigMapUID())
 
-		return err
-	} 
-	
-	// Unreachable
-	
-	panic(fmt.Errorf(logPfx+
-				"Failed: At this point, FrameworkState should be in {%v, %v} instead of %v",
-			ci.FrameworkAttemptPreparing, ci.FrameworkAttemptRunning, f.Status.State))
-	
+	if err != nil {
+		return true, err
+	}
+
+	f.Status.AttemptStatus.CompletionStatus =
+			ci.CompletionCodeConfigMapCreationTimeout.NewCompletionStatus(diag)
+	return false,nil
 }

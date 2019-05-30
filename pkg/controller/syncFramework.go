@@ -263,7 +263,9 @@ func (c *FrameworkController) syncFrameworkState(f *ci.Framework) error{
 	if syncExit == true || nil != err{
 		return err
 	}
-
+ 
+	// FrameworkAttemptPreparing => FrameworkAttemptPreparing  or  FrameworkAttemptPreparing => FrameworkAttemptRunning
+	// FrameworkAttemptRunning => FrameworkAttemptRunning or  FrameworkAttemptRunning => FrameworkAttemptPreparing
 
 	if f.Status.State == ci.FrameworkAttemptPreparing || f.Status.State == ci.FrameworkAttemptRunning{
 		syncExit,err = c._syncFrameworkAttemptRunningState(f,cm)
@@ -278,6 +280,9 @@ func (c *FrameworkController) syncFrameworkState(f *ci.Framework) error{
 			ci.FrameworkAttemptPreparing, ci.FrameworkAttemptRunning, f.Status.State))
 
 }
+
+// FrameworkAttemptPreparing => FrameworkAttemptPreparing  or  FrameworkAttemptPreparing => FrameworkAttemptRunning
+// FrameworkAttemptRunning => FrameworkAttemptRunning or  FrameworkAttemptRunning => FrameworkAttemptPreparing
 
 func (c *FrameworkController)_syncFrameworkAttemptRunningState(f *ci.Framework,cm *core.ConfigMap)(bool,error){
 	

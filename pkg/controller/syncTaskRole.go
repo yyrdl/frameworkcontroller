@@ -83,6 +83,10 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 
 	var syncExit,cancelled bool
 
+	if nil != pod {
+		f.TrackContainerStatus(taskRoleName,taskIndex,pod)
+	}
+
 
 	if nil != pod && nil != pod.DeletionTimestamp{
 		_,_,err = c._syncWhenTaskIsBeingDeleted(f,taskRoleName,taskIndex)
@@ -150,7 +154,7 @@ func (c *FrameworkController) syncTaskState(f *ci.Framework, cm *core.ConfigMap,
 		return false,err
 	}
 
-	/*********************** Then Pod Is nil *********************************/
+	/*********************** *********************************/
 	
 	// three cases when pod is nil
 
@@ -247,7 +251,7 @@ func (c *FrameworkController)_syncWhenUnexpectedPodDeletion(f *ci.Framework,task
 
 	taskStatus.AttemptStatus.CompletionTime = common.PtrNow()
 	
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCompleted,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCompleted)
 
 	log.Infof(logPfx+"TaskAttemptInstance %v is completed with CompletionStatus: %v",*taskStatus.TaskAttemptInstanceUID(),
 	taskStatus.AttemptStatus.CompletionStatus)
@@ -271,7 +275,7 @@ func (c *FrameworkController) _syncWhenTaskAttemptDeletionDone(f *ci.Framework,t
 	
 	taskStatus.AttemptStatus.CompletionTime = common.PtrNow()
 		
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCompleted,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCompleted)
 	
 	log.Infof(logPfx+"TaskAttemptInstance %v is completed with CompletionStatus: %v",*taskStatus.TaskAttemptInstanceUID(),
 	taskStatus.AttemptStatus.CompletionStatus)
@@ -284,7 +288,7 @@ func (c *FrameworkController) _syncWhenTaskAttemptDeletionDone(f *ci.Framework,t
 func (c *FrameworkController)_syncBeforeTaskAttemptCreationPending(f *ci.Framework,taskRoleName string, 
 	taskIndex int32)(syncExit bool,cancelled bool,err error){
 
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCreationPending,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCreationPending)
 
 	return false,false,nil
 }
@@ -334,7 +338,7 @@ func (c *FrameworkController) _syncWhenTaskIsBeingDeleted(f *ci.Framework,taskRo
 	logPfx := fmt.Sprintf("[%v][%v][%v]: syncTaskState: ",f.Key(), taskRoleName, taskIndex)
 
 
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptDeleting,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptDeleting)
 
 	log.Infof(logPfx + "Waiting Pod to be deleted")
 
@@ -356,7 +360,7 @@ func (c *FrameworkController)_syncWhenTaskAttemptDeletionPending(f *ci.Framework
 		return true,false, err
 	}
 
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptDeletionRequested,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptDeletionRequested)
 
 	return false,false,nil
 
@@ -393,7 +397,7 @@ func(c* FrameworkController)_syncWhenUnknownPodPhase(f *ci.Framework,taskRoleNam
 func (c *FrameworkController) _syncBeforeTaskAttemptPreparing(f *ci.Framework,taskRoleName string, 
 	taskIndex int32)(syncExit bool,cancelled bool,err error){
 
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptPreparing,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptPreparing)
 
 	return true,false,nil
 
@@ -403,7 +407,7 @@ func (c *FrameworkController) _syncBeforeTaskAttemptPreparing(f *ci.Framework,ta
 func (c *FrameworkController) _syncBeforeTaskAttemptRunning(f *ci.Framework,taskRoleName string, 
 	taskIndex int32)(syncExit bool,cancelled bool,err error){
 	
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptRunning,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptRunning)
 
 	return true,false,nil
 }
@@ -519,7 +523,7 @@ func (c *FrameworkController) _syncWhenTaskAttemptCompleted(f *ci.Framework,task
 
 			taskStatus.CompletionTime = common.PtrNow()
 
-			f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskCompleted,nil)
+			f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskCompleted)
 		}
 	}
 
@@ -539,7 +543,7 @@ func (c *FrameworkController) _syncWhenTaskAttemptCompleted(f *ci.Framework,task
 		taskStatus.RetryPolicyStatus.RetryDelaySec = nil
 		taskStatus.AttemptStatus = f.NewTaskAttemptStatus(taskRoleName, taskIndex, taskStatus.RetryPolicyStatus.TotalRetriedCount)
 
-		f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCreationPending,nil)
+		f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCreationPending)
 	}
 
 	return false,false,nil
@@ -665,7 +669,7 @@ func (c *FrameworkController) _syncWhenTaskAttemptCreationPending(f *ci.Framewor
 
 	taskStatus.AttemptStatus.InstanceUID = ci.GetTaskAttemptInstanceUID(taskStatus.TaskAttemptID(), taskStatus.PodUID())
 
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCreationRequested,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptCreationRequested)
 
 	// Informer may not deliver any event if a create is immediately followed by
 	// a delete, so manually enqueue a sync to check the pod existence after the

@@ -443,7 +443,7 @@ func (f *Framework) NewTaskAttemptStatus(
 		PodIP:            nil,
 		PodHostIP:        nil,
 		CompletionStatus: nil,
-		ContainerStatuses: nil,
+		ContainerInfos: nil,
 	}
 }
 
@@ -546,7 +546,7 @@ func (f *Framework) TransitionFrameworkState(dstState FrameworkState) {
 }
 
 // This is the only interface to modify TaskState
-func (f *Framework) TransitionTaskState(taskRoleName string, taskIndex int32, dstState TaskState,containerStatuses []core.ContainerStatus) {
+func (f *Framework) TransitionTaskState(taskRoleName string, taskIndex int32, dstState TaskState) {
 
 	taskStatus := f.TaskStatus(taskRoleName, taskIndex)
 
@@ -559,11 +559,82 @@ func (f *Framework) TransitionTaskState(taskRoleName string, taskIndex int32, ds
 	taskStatus.State = dstState
 	taskStatus.TransitionTime = meta.Now()
 
-	if (nil != containerStatuses){
-		taskStatus.AttemptStatus.ContainerStatuses = containerStatuses
+	log.Infof("[%v][%v][%v]: Transitioned Task from [%v] to [%v]",f.Key(), taskRoleName, taskIndex, srcState, dstState)
+}
+
+func (f *Framework) TrackContainerStatus(taskRoleName string, taskIndex int32,pod *core.Pod){
+
+	if nil == pod{
+		return
 	}
 
-	log.Infof(
-		"[%v][%v][%v]: Transitioned Task from [%v] to [%v]",
-		f.Key(), taskRoleName, taskIndex, srcState, dstState)
+	taskStatus := f.TaskStatus(taskRoleName, taskIndex)
+
+	if nil == taskStatus{
+		return 
+	}
+
+	trackContainerStatus(taskStatus,pod.Status.ContainerStatuses)
+
+}
+
+
+func trackContainerStatus(status * TaskStatus,containerStatuses []core.ContainerStatus){
+	
+	
+	if nil == containerStatuses   || 0 == len(containerStatuses){
+		return
+	}
+
+	var num,cap int
+
+	num = len(containerStatuses)
+
+	if nil == status.AttemptStatus.ContainerInfos {
+		status.AttemptStatus.ContainerInfos = make([]*ContainerInfo, num)
+		cap = num
+	}else{
+		cap = len(status.AttemptStatus.ContainerInfos)
+	}
+
+	if num < cap {
+		status.AttemptStatus.ContainerInfos = status.AttemptStatus.ContainerInfos[:num]
+	}
+
+	if num > cap{
+		add := make([] *ContainerInfo,num -cap)
+		status.AttemptStatus.ContainerInfos = append(status.AttemptStatus.ContainerInfos,add ...)
+	}
+
+	var ref *ContainerInfo
+
+	for i:=0 ; i < num ; i++ {
+
+		container := containerStatuses[i]
+
+		ref = status.AttemptStatus.ContainerInfos[i]
+
+		if nil == ref {
+			ref = &ContainerInfo{}
+			status.AttemptStatus.ContainerInfos[i] = ref
+		}
+
+		ref.ID = container.ContainerID
+		ref.Name = container.Name
+		ref.RestartCount = container.RestartCount
+
+		if  nil == container.State.Terminated {
+			continue
+		}
+
+		if nil == ref.ExitStatus{
+			ref.ExitStatus = &ContainerExitStatus{}
+		}
+
+		ref.ExitStatus.ExitCode = container.State.Terminated.ExitCode
+		ref.ExitStatus.Signal = container.State.Terminated.Signal
+		ref.ExitStatus.Reason = container.State.Terminated.Reason
+		ref.ExitStatus.Message = container.State.Terminated.Message
+
+	}
 }

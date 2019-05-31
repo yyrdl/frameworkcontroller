@@ -175,39 +175,35 @@ func (c *FrameworkController) syncFrameworkState(f *ci.Framework) error{
 
 	var syncExit bool
 
-	// The configMap is being deleted
-	//　configMap 正在被删除
-	if nil != cm && nil != cm.DeletionTimestamp {
-		syncExit,err = c._syncWhenConfigMapIsBeingDeleted(f)
-		return err
-	}
+	// need to delete the configMap, just Delete it
 
-	if nil != cm  &&  f.Status.State == ci.FrameworkAttemptDeletionPending {
+	if nil != cm  && nil == cm.DeletionTimestamp &&  f.Status.State == ci.FrameworkAttemptDeletionPending {
 		syncExit,err = c._syncWhenFrameworkAttemptDeletionPending(f)
 		if syncExit == true || nil != err{
 			return err
 		}
 	}
+	
+	// The configMap has already been deleted or is being deleted, just wait until it is totally completed
 
-    // Avoid sync with outdated object:
-	// cm is remote deletion requested but not deleting or deleted in the local  cache.
-	//　已经发出了删除ｃｍ的请求，等待本地的cm　消失
+	// 等待 删除ConfigMap 彻底完成
 
-	if nil != cm  && f.Status.State == ci.FrameworkAttemptDeletionRequested{
-		syncExit,err = c._syncWhenFrameworkAttemptDeletionRequested(f)
+	if nil != cm && (nil != cm.DeletionTimestamp || f.Status.State == ci.FrameworkAttemptDeletionRequested) {
+
+		syncExit,err = c._syncWaitConfigMapDeletionCompleted(f,nil != cm.DeletionTimestamp)
+
 		return err
 	}
 
 	
 	if nil != cm && f.Status.State != ci.FrameworkAttemptPreparing && f.Status.State != ci.FrameworkAttemptRunning{
 		syncExit,err = c._syncWhenFrameworkAttemptCreationRequested(f)
+		if syncExit == true || nil != err{
+			return err
+		}
 	}
 
-	if syncExit == true || nil != err{
-		return err
-	}
-
-	//the framework has not been created , switch the state to FrameworkAttemptCreationPending
+	//the framework has not been created , switch to state "FrameworkAttemptCreationPending"
 	//表明　controller 还未创建这个 framework ,　向下一个状态转变
 
 	if nil == cm && nil == f.ConfigMapUID() {
@@ -239,7 +235,7 @@ func (c *FrameworkController) syncFrameworkState(f *ci.Framework) error{
 		return err
 	}
 
-	// 删除的过度状态，转到下一个状态
+	// State 是删除的过渡状态， cm 已经消失了,删除彻底完成,转到下一个状态
 	if nil == cm && ( f.Status.State == ci.FrameworkAttemptDeletionRequested  || f.Status.State == ci.FrameworkAttemptDeleting){
 		syncExit,err = c._syncWhenConfigMapDeletionDone(f)
 	}
@@ -391,6 +387,20 @@ func (c *FrameworkController) _syncWhenFrameworkAttemptCreationRequested(f *ci.F
 	return false,nil
 }
 
+func (c *FrameworkController) _syncWaitConfigMapDeletionCompleted(f *ci.Framework,isDeleting bool)(bool,error){
+
+	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
+
+	if true == isDeleting {
+		// the DeletionTimeStamp is not nil, and the resource is going to be deleted by k8s
+		f.TransitionFrameworkState(ci.FrameworkAttemptDeleting)
+	}
+	// else , we just made the deletion request 
+	
+	log.Infof(logPfx + "Waiting ConfigMap to be deleted, and waiting ConfigMap to disappearing or disappear in the local cache")
+
+	return true, nil
+}
 
 func (c *FrameworkController) _syncWhenConfigMapDeletionDone(f *ci.Framework)(bool,error){
 	
@@ -413,15 +423,6 @@ func (c *FrameworkController) _syncWhenConfigMapDeletionDone(f *ci.Framework)(bo
 	return false,nil
 }
 
-func (c *FrameworkController)_syncWhenFrameworkAttemptDeletionRequested(f *ci.Framework)(bool,error){
-	// The deletion requested object will never appear again with the same UID,
-	// so always just wait.
-	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
-	log.Infof(logPfx +"Waiting ConfigMap to disappearing or disappear in the local cache")
-		 
-
-	return false,nil
-}
 
 func (c *FrameworkController)_syncWhenFrameworkAttemptDeletionPending(f *ci.Framework)(bool,error){
 	// The CompletionStatus has been persisted, so it is safe to delete the
@@ -436,18 +437,7 @@ func (c *FrameworkController)_syncWhenFrameworkAttemptDeletionPending(f *ci.Fram
 
 	return false,nil
 }
-
-func (c *FrameworkController) _syncWhenConfigMapIsBeingDeleted(f *ci.Framework)(bool,error){
-
-	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())
-
-	f.TransitionFrameworkState(ci.FrameworkAttemptDeleting)
-
-	log.Infof(logPfx + "Waiting ConfigMap to be deleted")
-
-	return true, nil
-}
-
+ 
 func (c *FrameworkController) _syncWhenUnexpectedConfigMapDeletion(f *ci.Framework)(bool,error){
 
 	logPfx := fmt.Sprintf("[%v]: syncFrameworkState: ", f.Key())

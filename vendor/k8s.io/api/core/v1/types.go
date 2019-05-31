@@ -2448,6 +2448,7 @@ const (
 )
 
 // PodCondition contains details for the current condition of this pod.
+
 type PodCondition struct {
 	// Type is the type of the condition.
 	// Currently only Ready.

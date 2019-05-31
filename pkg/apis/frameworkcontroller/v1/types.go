@@ -287,6 +287,21 @@ type TaskStatus struct {
 	AttemptStatus     TaskAttemptStatus `json:"attemptStatus"`
 }
 
+type ContainerExitStatus struct {
+	ExitCode int32 `json:"exitCode"`
+	Signal int32 `json:"signal"`
+	Reason string `json:"reason"`
+	Message string `json:"message"`
+}
+
+type  ContainerInfo struct {
+	ID string `json:"id"`
+	Name string `json:"name"`
+	RestartCount int32 `json:"restartCount"`
+	ExitStatus *ContainerExitStatus `json:"exitStatus"`
+}
+
+
 type TaskAttemptStatus struct {
 	// TaskAttemptID = {TaskStatus.RetryPolicyStatus.TotalRetriedCount}
 	// It can only locate the TaskAttempt within a specific Task, i.e. it cannot
@@ -311,7 +326,7 @@ type TaskAttemptStatus struct {
 	PodIP            *string           `json:"podIP"`
 	PodHostIP        *string           `json:"podHostIP"`
 	CompletionStatus *CompletionStatus `json:"completionStatus"`
-	ContainerStatuses []core.ContainerStatus `json:"containerStatuses,omitempty" protobuf:"bytes,8,rep,name=containerStatuses"`
+	ContainerInfos []*ContainerInfo `json:"containerInfos"`
 }
 
 type RetryPolicyStatus struct {

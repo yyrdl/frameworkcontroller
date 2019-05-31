@@ -165,15 +165,13 @@ func (c *FrameworkController) recoverTimeoutChecks(f *ci.Framework) {
 
 
 
-func (c *FrameworkController) completeTaskAttempt(
-		f *ci.Framework, taskRoleName string, taskIndex int32,
-		completionStatus *ci.CompletionStatus) {
-	logPfx := fmt.Sprintf("[%v][%v][%v]: completeTaskAttempt: ",
-		f.Key(), taskRoleName, taskIndex)
+func (c *FrameworkController) completeTaskAttempt(f *ci.Framework, taskRoleName string, taskIndex int32,completionStatus *ci.CompletionStatus) {
+
+	logPfx := fmt.Sprintf("[%v][%v][%v]: completeTaskAttempt: ",f.Key(), taskRoleName, taskIndex)
 
 	taskStatus := f.TaskStatus(taskRoleName, taskIndex)
 	taskStatus.AttemptStatus.CompletionStatus = completionStatus
-	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptDeletionPending,nil)
+	f.TransitionTaskState(taskRoleName, taskIndex, ci.TaskAttemptDeletionPending)
 
 	// To ensure the CompletionStatus is persisted before deleting the pod,
 	// we need to wait until next sync to delete the pod, so manually enqueue

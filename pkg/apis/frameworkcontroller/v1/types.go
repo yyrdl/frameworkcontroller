@@ -504,11 +504,16 @@ const (
 type TaskState string
 
 const (
+	// Attempt is not created
+	//[StartState]
+	// -> TaskAttemptCreationPending
+	TaskAttemptBeforeCreationPending TaskState = "AttemptBeforeCreationPending"
+
 	// Pod does not exist and
 	// has not been creation requested.
-	// [StartState]
 	// [AttemptStartState]
 	// -> TaskAttemptCreationRequested
+	
 	TaskAttemptCreationPending TaskState = "AttemptCreationPending"
 
 	// Pod does not exist and
@@ -529,6 +534,8 @@ const (
 	// -> TaskAttemptDeleting
 	// -> TaskAttemptCompleted
 	TaskAttemptPreparing TaskState = "AttemptPreparing"
+
+
 
 	// Pod exists and is not deleting and
 	// has not been deletion requested and

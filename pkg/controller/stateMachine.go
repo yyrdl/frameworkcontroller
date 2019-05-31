@@ -9,6 +9,7 @@ type StateHandler struct {
 	
 }
 
+
 type FrameworkStateMachine struct {
 	
 }
@@ -18,11 +19,23 @@ type TaskStateMachine struct {
 }
 
 
-func (m * TaskStateMachine) Context(f *ci.Framework) *TaskStateMachine{
+
+func (m *TaskStateMachine)AddState(state ci.TaskState, condition func() , action func()) *TaskStateMachine{
+
+	return m
+}
+
+func (m *TaskStateMachine)DeleteState(state ci.TaskState){
 	
-	return nil
+}
+
+
+func (m * TaskStateMachine) Context(f *ci.Framework) *TaskStateMachine{
+
+	return m
 }
 
 func (m * TaskStateMachine)Next(){
 
 }
+
